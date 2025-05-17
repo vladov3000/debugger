@@ -1,13 +1,36 @@
 import { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { randomUUID } from "crypto";
 import { commands, debug, ExtensionContext, Location, Position, SourceBreakpoint, Uri, window, workspace } from "vscode";
 import { z } from "zod";
 import { startExpressServer } from "./server";
 
+let output: string[] = [];
+let exited = false;
+
+function getOutput(): string | undefined {
+    return exited ? output.join() : undefined;
+}
+
 export function activate(context: ExtensionContext) {
     const startServer = commands.registerCommand("extension.startServer", async () => {
         const server = new McpServer({ name: "Debugger", version: "1.0.0" });
+
+        debug.registerDebugAdapterTrackerFactory('node', {
+            createDebugAdapterTracker(session) {
+                return {
+                    onWillStartSession() {
+                        output = [];
+                    },
+                    onDidSendMessage(message) {
+                        if (message.type === 'event' && message.event === 'output') {
+                            output.push(message.body.output);
+                        }
+                    },
+                    onExit() {
+
+                    }
+                };
+            }
+        });
 
         server.tool("start", {}, async () => {
             await commands.executeCommand("workbench.action.debug.start");
@@ -63,7 +86,12 @@ export function activate(context: ExtensionContext) {
 
 function toolCommand(server: McpServer, name: string, action: string): RegisteredTool {
     return server.tool(name, {}, async ({ }) => {
-        await commands.executeCommand(action)
+        const output = getOutput();
+        if (output !== undefined) {
+            return { content: [{ type: "text", text: "Process Exited\n" + output }] };
+        }
+
+        await commands.executeCommand(action);
         return { content: [] };
     });
 }
