@@ -1,22 +1,39 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
-import * as vscode from 'vscode';
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { randomUUID } from "crypto";
+import * as vscode from "vscode";
+import { z } from "zod";
 
-// this method is called when your extension is activated
-// your extension is activated the very first time the command is executed
+type Transport = StreamableHTTPServerTransport
+
+const transports: Map<string, Transport> = new Map();
+
 export function activate(context: vscode.ExtensionContext) {
-    // Use the console to output diagnostic information (console.log) and errors (console.error)
-    // This line of code will only be executed once when your extension is activated
-    console.log('Congratulations, your extension "helloworld-sample" is now active!');
+    const disposable = vscode.commands.registerCommand("extension.startServer", async () => {
+        const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: sessionId => {
+                transports.set(sessionId, transport);
+            }
+        });
 
-    // The command has been defined in the package.json file
-    // Now provide the implementation of the command with registerCommand
-    // The commandId parameter must match the command field in package.json
-    const disposable = vscode.commands.registerCommand('extension.helloWorld', () => {
-        // The code you place here will be executed every time your command is executed
+        transport.onclose = () => {
+            if (transport.sessionId !== undefined) {
+                transports.delete(transport.sessionId);
+            }
+        };
 
-        // Display a message box to the user
-        vscode.window.showInformationMessage('Hello World!');
+        const server = new McpServer({ name: "Debugger", version: "1.0.0" });
+
+        server.tool("add",
+            { a: z.number(), b: z.number() },
+            async ({ a, b }) => ({
+                content: [{ type: "text", text: String(a + b) }]
+            })
+        );
+
+        vscode.window.showInformationMessage("Starting server.");
+        await server.connect(transport);
     });
 
     context.subscriptions.push(disposable);
