@@ -1,40 +1,159 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { randomUUID } from "crypto";
-import * as vscode from "vscode";
+import { commands, debug, ExtensionContext, Location, Position, SourceBreakpoint, Uri, window, workspace } from "vscode";
 import { z } from "zod";
+import { startExpressServer } from "./server";
 
-type Transport = StreamableHTTPServerTransport
-
-const transports: Map<string, Transport> = new Map();
-
-export function activate(context: vscode.ExtensionContext) {
-    const disposable = vscode.commands.registerCommand("extension.startServer", async () => {
-        const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-            onsessioninitialized: sessionId => {
-                transports.set(sessionId, transport);
-            }
-        });
-
-        transport.onclose = () => {
-            if (transport.sessionId !== undefined) {
-                transports.delete(transport.sessionId);
-            }
-        };
-
+export function activate(context: ExtensionContext) {
+    const startServer = commands.registerCommand("extension.startServer", async () => {
         const server = new McpServer({ name: "Debugger", version: "1.0.0" });
 
-        server.tool("add",
-            { a: z.number(), b: z.number() },
-            async ({ a, b }) => ({
-                content: [{ type: "text", text: String(a + b) }]
-            })
-        );
+        server.tool("start", {}, async () => {
+            await commands.executeCommand("workbench.action.debug.start");
+            await waitUntilPaused(5000);
+            return { content: [] };
+        });
 
-        vscode.window.showInformationMessage("Starting server.");
-        await server.connect(transport);
+        const actions = ["stepOver", "stepInto", "stepOut", "continue", "pause", "restart", "stop"];
+        for (const action of actions) {
+            toolCommand(server, action, `workbench.action.debug.${action}`);
+        }
+
+        server.tool("addBreakpoints", {
+            file: z.string(),
+            line: z.number(),
+        }, async ({ file, line }) => {
+            const workspacePath = workspace.workspaceFolders?.[0].uri;
+            if (workspacePath !== undefined) {
+                const position = new Position(line, 0);
+                const path = Uri.joinPath(workspacePath, file);
+                const location = new Location(path, position);
+                const breakpoint = new SourceBreakpoint(location, true);
+                debug.addBreakpoints([breakpoint]);
+            }
+            return { content: [] };
+        });
+
+        server.tool("getLines", {
+            count: z.number()
+        }, async ({ count }) => {
+            const lines = await getLines(count);
+            return { content: [{ type: "text", text: lines }] };
+        });
+
+        server.tool("evaluate", { expression: z.string() }, async ({ expression }) => {
+            const output = await evaluate(expression);
+            return { content: [{ type: "text", text: output }] };
+        });
+
+        await commands.executeCommand("workbench.action.debug.start");
+
+        window.showInformationMessage("Starting server.");
+        await startExpressServer(server);
     });
 
-    context.subscriptions.push(disposable);
+    const testServer = commands.registerCommand("extension.testServer", async () => {
+        await commands.executeCommand("workbench.action.debug.stepOver");
+        window.showInformationMessage(await evaluate("y + 10"));
+    });
+
+    context.subscriptions.push(startServer, testServer);
+}
+
+function toolCommand(server: McpServer, name: string, action: string): RegisteredTool {
+    return server.tool(name, {}, async ({ }) => {
+        await commands.executeCommand(action)
+        return { content: [] };
+    });
+}
+
+function waitUntilPaused(timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve, _reject) => {
+        const timeout = setTimeout(() => {
+            listener.dispose();
+            resolve(false);
+        }, timeoutMs);
+
+        const listener = debug.onDidReceiveDebugSessionCustomEvent(event => {
+            if (event.event === "stopped") {
+                clearTimeout(timeout);
+                listener.dispose();
+                resolve(false);
+            }
+        });
+    });
+}
+
+async function getLines(count: number): Promise<string> {
+    commands.executeCommand("workbench.action.debug.pause");
+    if (await waitUntilPaused(5000)) {
+        return "Thread is not paused.";
+    }
+
+    const session = debug.activeDebugSession;
+    if (session === undefined) {
+        return "Thread is not paused.";
+    }
+
+    const threadId = debug.activeStackItem?.threadId;
+    if (threadId === undefined) {
+        return "Thread is not paused.";
+    }
+
+    const stackTrace = await session.customRequest("stackTrace", {
+        threadId,
+        startFrame: 0,
+        levels: 1,
+    });
+
+    const frame = stackTrace.stackFrames?.[0];
+    if (!frame || !frame.source?.path || frame.line == null) {
+        return "Thread is not paused.";
+    }
+
+    const uri = Uri.file(frame.source.path);
+    const doc = await workspace.openTextDocument(uri);
+
+    let output = "";
+    for (let i = -count; i < count; i++) {
+        const line = frame.line + i;
+        if (0 < line && line < doc.lineCount) {
+            output += doc.lineAt(line).text + '\n';
+        }
+    }
+    return output;
+}
+
+async function evaluate(input: string): Promise<string> {
+    const threadId = debug.activeStackItem?.threadId;
+    if (threadId === undefined) {
+        return "Thread is not paused.";
+    }
+
+    const session = debug.activeDebugSession;
+    if (session === undefined) {
+        return "Thread is not paused.";
+    }
+
+    const stackTrace = await session.customRequest("stackTrace", {
+        threadId,
+        startFrame: 0,
+        levels: 1,
+    });
+
+    const frameId = stackTrace.stackFrames?.[0].id;
+
+    let output = null;
+    try {
+        output = await session?.customRequest("evaluate", {
+            expression: input,
+            frameId,
+            context: "watch",
+        });
+    } catch (error) {
+        return (error as Error).message;
+    }
+
+    return output.result;
 }
