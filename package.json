@@ -32,7 +32,8 @@
         "@types/express": "^5.0.2",
         "@types/node": "^20",
         "@types/vscode": "^1.73.0",
-        "typescript": "^5.8.2"
+        "typescript": "^5.8.2",
+        "vsce": "^2.15.0"
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.11.4",
