@@ -16,6 +16,10 @@
             {
                 "command": "extension.startServer",
                 "title": "Start Server"
+            },
+            {
+                "command": "extension.testServer",
+                "title": "Test Server"
             }
         ]
     },

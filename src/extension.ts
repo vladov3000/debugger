@@ -44,17 +44,10 @@ export function activate(context: ExtensionContext) {
         }
 
         server.tool("addBreakpoints", {
-            file: z.string(),
+            relativeFilePath: z.string(),
             line: z.number(),
-        }, async ({ file, line }) => {
-            const workspacePath = workspace.workspaceFolders?.[0].uri;
-            if (workspacePath !== undefined) {
-                const position = new Position(line, 0);
-                const path = Uri.joinPath(workspacePath, file);
-                const location = new Location(path, position);
-                const breakpoint = new SourceBreakpoint(location, true);
-                debug.addBreakpoints([breakpoint]);
-            }
+        }, async ({ relativeFilePath, line }) => {
+            addBreakpoint(relativeFilePath, line);
             return { content: [] };
         });
 
@@ -77,8 +70,7 @@ export function activate(context: ExtensionContext) {
     });
 
     const testServer = commands.registerCommand("extension.testServer", async () => {
-        await commands.executeCommand("workbench.action.debug.stepOver");
-        window.showInformationMessage(await evaluate("y + 10"));
+        addBreakpoint("main.js", 1);
     });
 
     context.subscriptions.push(startServer, testServer);
@@ -121,12 +113,12 @@ async function getLines(count: number): Promise<string> {
 
     const session = debug.activeDebugSession;
     if (session === undefined) {
-        return "Thread is not paused.";
+        return "The debugger is not paused.";
     }
 
     const threadId = debug.activeStackItem?.threadId;
     if (threadId === undefined) {
-        return "Thread is not paused.";
+        return "The debugger is not paused.";
     }
 
     const stackTrace = await session.customRequest("stackTrace", {
@@ -137,7 +129,7 @@ async function getLines(count: number): Promise<string> {
 
     const frame = stackTrace.stackFrames?.[0];
     if (!frame || !frame.source?.path || frame.line == null) {
-        return "Thread is not paused.";
+        return "The debugger is not paused.";
     }
 
     const uri = Uri.file(frame.source.path);
@@ -156,12 +148,12 @@ async function getLines(count: number): Promise<string> {
 async function evaluate(input: string): Promise<string> {
     const threadId = debug.activeStackItem?.threadId;
     if (threadId === undefined) {
-        return "Thread is not paused.";
+        return "The debugger is not running.";
     }
 
     const session = debug.activeDebugSession;
     if (session === undefined) {
-        return "Thread is not paused.";
+        return "The debugger is not running.";
     }
 
     const stackTrace = await session.customRequest("stackTrace", {
@@ -184,4 +176,15 @@ async function evaluate(input: string): Promise<string> {
     }
 
     return output.result;
+}
+
+function addBreakpoint(file: string, line: number) {
+    const workspacePath = workspace.workspaceFolders?.[0].uri;
+    if (workspacePath !== undefined) {
+        const position = new Position(line - 1, 0);
+        const path = Uri.joinPath(workspacePath, file);
+        const location = new Location(path, position);
+        const breakpoint = new SourceBreakpoint(location, true);
+        debug.addBreakpoints([breakpoint]);
+    }
 }
